@@ -3,7 +3,6 @@
 import Image from "next/image";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-
 import { cn } from "@/lib/utils";
 import { vapi } from "@/lib/vapi.sdk";
 import { interviewer } from "@/constants";
@@ -30,21 +29,31 @@ const Agent = ({
     questions,
 }: AgentProps) => {
     const router = useRouter();
+
     const [callStatus, setCallStatus] = useState<CallStatus>(CallStatus.INACTIVE);
     const [messages, setMessages] = useState<SavedMessage[]>([]);
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [lastMessage, setLastMessage] = useState<string>("");
 
+    // 🎧 Vapi Event Handlers
     useEffect(() => {
         const onCallStart = () => {
+            console.log("Vapi call started");
             setCallStatus(CallStatus.ACTIVE);
         };
 
         const onCallEnd = () => {
+            console.log("Vapi call ended");
             setCallStatus(CallStatus.FINISHED);
+
+            try {
+                vapi.stop();
+            } catch (e) {
+                console.warn("Error stopping call:", e);
+            }
         };
 
-        const onMessage = (message: Message) => {
+        const onMessage = (message: any) => {
             if (message.type === "transcript" && message.transcriptType === "final") {
                 const newMessage = { role: message.role, content: message.transcript };
                 setMessages((prev) => [...prev, newMessage]);
@@ -52,19 +61,38 @@ const Agent = ({
         };
 
         const onSpeechStart = () => {
-            console.log("speech start");
+            console.log("Speech start");
             setIsSpeaking(true);
         };
 
         const onSpeechEnd = () => {
-            console.log("speech end");
+            console.log("Speech end");
             setIsSpeaking(false);
         };
 
-        const onError = (error: Error) => {
-            console.log("Error:", error);
+        // ✅ Robust Error Handling
+        const onError = (error: any) => {
+            console.error("Vapi Error:", error);
+
+            if (
+                error?.error?.type === "ejected" ||
+                error?.errorMsg === "Meeting has ended"
+            ) {
+                console.warn("Meeting ended or you were ejected.");
+
+                try {
+                    vapi.stop();
+                } catch (e) {
+                    console.warn("Vapi stop failed (already stopped):", e);
+                }
+
+                setCallStatus(CallStatus.FINISHED);
+                alert("Meeting has ended.");
+                router.push("/"); // redirect or dashboard
+            }
         };
 
+        // Attach listeners
         vapi.on("call-start", onCallStart);
         vapi.on("call-end", onCallEnd);
         vapi.on("message", onMessage);
@@ -72,6 +100,7 @@ const Agent = ({
         vapi.on("speech-end", onSpeechEnd);
         vapi.on("error", onError);
 
+        // Cleanup on unmount
         return () => {
             vapi.off("call-start", onCallStart);
             vapi.off("call-end", onCallEnd);
@@ -79,9 +108,16 @@ const Agent = ({
             vapi.off("speech-start", onSpeechStart);
             vapi.off("speech-end", onSpeechEnd);
             vapi.off("error", onError);
-        };
-    }, []);
 
+            try {
+                vapi.stop();
+            } catch (e) {
+                console.warn("Cleanup stop failed:", e);
+            }
+        };
+    }, [router]);
+
+    // 🧠 Handle Feedback Generation
     useEffect(() => {
         if (messages.length > 0) {
             setLastMessage(messages[messages.length - 1].content);
@@ -114,37 +150,50 @@ const Agent = ({
         }
     }, [messages, callStatus, feedbackId, interviewId, router, type, userId]);
 
+    // 📞 Start the call
     const handleCall = async () => {
         setCallStatus(CallStatus.CONNECTING);
 
-        if (type === "generate") {
-            await vapi.start(process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID!, {
-                variableValues: {
-                    username: userName,
-                    userid: userId,
-                },
-            });
-        } else {
-            let formattedQuestions = "";
-            if (questions) {
-                formattedQuestions = questions
-                    .map((question) => `- ${question}`)
-                    .join("\n");
-            }
+        try {
+            if (type === "generate") {
+                await vapi.start(process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID!, {
+                    variableValues: {
+                        username: userName,
+                        userid: userId,
+                    },
+                });
+            } else {
+                let formattedQuestions = "";
+                if (questions) {
+                    formattedQuestions = questions
+                        .map((question) => `- ${question}`)
+                        .join("\n");
+                }
 
-            await vapi.start(interviewer, {
-                variableValues: {
-                    questions: formattedQuestions,
-                },
-            });
+                await vapi.start(interviewer, {
+                    variableValues: {
+                        questions: formattedQuestions,
+                    },
+                });
+            }
+        } catch (error) {
+            console.error("Error starting Vapi call:", error);
+            setCallStatus(CallStatus.INACTIVE);
+            alert("Failed to start meeting. Please try again.");
         }
     };
 
+    // ❌ End call manually
     const handleDisconnect = () => {
+        try {
+            vapi.stop();
+        } catch (e) {
+            console.warn("Manual stop error:", e);
+        }
         setCallStatus(CallStatus.FINISHED);
-        vapi.stop();
     };
 
+    // 🖼️ UI
     return (
         <>
             <div className="call-view">
@@ -178,6 +227,7 @@ const Agent = ({
                 </div>
             </div>
 
+            {/* Transcript Section */}
             {messages.length > 0 && (
                 <div className="transcript-border">
                     <div className="transcript">
@@ -194,24 +244,25 @@ const Agent = ({
                 </div>
             )}
 
+            {/* Call Control Button */}
             <div className="w-full flex justify-center">
-                {callStatus !== "ACTIVE" ? (
-                    <button className="relative btn-call" onClick={() => handleCall()}>
+                {callStatus !== CallStatus.ACTIVE ? (
+                    <button className="relative btn-call" onClick={handleCall}>
                         <span
                             className={cn(
                                 "absolute animate-ping rounded-full opacity-75",
-                                callStatus !== "CONNECTING" && "hidden"
+                                callStatus !== CallStatus.CONNECTING && "hidden"
                             )}
                         />
-
                         <span className="relative">
-                            {callStatus === "INACTIVE" || callStatus === "FINISHED"
+                            {callStatus === CallStatus.INACTIVE ||
+                                callStatus === CallStatus.FINISHED
                                 ? "Call"
                                 : ". . ."}
                         </span>
                     </button>
                 ) : (
-                    <button className="btn-disconnect" onClick={() => handleDisconnect()}>
+                    <button className="btn-disconnect" onClick={handleDisconnect}>
                         End
                     </button>
                 )}

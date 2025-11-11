@@ -74,7 +74,7 @@ export async function getInterviewById(id: string): Promise<Interview | null> {
 
 export async function getFeedbackByInterviewId(
   params: GetFeedbackByInterviewIdParams
-): Promise<Feedback | null> {
+): Promise< Feedback | null> {
   const { interviewId, userId } = params;
 
   const feedback = await db
